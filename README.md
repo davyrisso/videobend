@@ -23,7 +23,7 @@ frames = motionmosh.GenerateFrames(input_video, ...)
 
 As script:
 ```sh
-$ python -m videobend.effects.motionmosh <input_video> <output_video> [-fx_s <effect_start>] -fx_e <effect_end>
+$ python -m videobend.effects.motionmosh <input_video> <output_video> [-fx_s <effect_start>] [-fx_e <effect_end>]
 ```
 
 ## Effects
