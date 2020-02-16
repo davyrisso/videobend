@@ -8,50 +8,72 @@ from videobend.utils import video
 # TODO(davyrisso): Expose parameters (Optical Flow, Frame opacity, etc.)
 
 
-def GenerateFrames(
-        input_video,
-        start_frame, end_frame,
-        effect_start_frame, effect_end_frame,
-        interactive=False):
+def GenerateFrames(input_video, motion_video, interactive=False):
     """Applies the effect and returns a generator over the generated frames."""
 
     # Creates the initial previous frame as the first affected frame.
     # Note: We convert to grayscale as it is what optical flow uses.
+    previous_motion_frame_grayscale = cv2.cvtColor(
+        motion_video.ReadFrameAt(0), cv2.COLOR_BGR2GRAY)
+    motion_video_frames = motion_video.ReadFrames(
+        start_frame=1)
+
     previous_frame_grayscale = cv2.cvtColor(
-        input_video.ReadFrameAt(effect_start_frame), cv2.COLOR_BGR2GRAY)
+        input_video.ReadFrameAt(0), cv2.COLOR_BGR2GRAY)
 
     # Places the first frame of the video in an image buffer.
-    image_buffer = input_video.ReadFrameAt(effect_start_frame)
+    image_buffer = input_video.ReadFrameAt(0)
 
-    for frame, position in input_video.ReadFrames(
-            start_frame=start_frame, end_frame=end_frame,
-            interactive=interactive):
+    sum_motion_flows = numpy.zeros(
+        (input_video.frame_height, input_video.frame_width, 2),
+        dtype=numpy.float32)
 
-        # Returns unaffected frames before effect_start_frame.
-        if position[0] < effect_start_frame:
-            yield frame, position
-            continue
+    sum_frames_flows = numpy.zeros(
+        (input_video.frame_height, input_video.frame_width, 2),
+        dtype=numpy.float32)
 
-        # Returns unaffected frames after effect_end_frame.
-        if position[0] > effect_end_frame:
-            yield frame, position
-            continue
+    for frame, position in input_video.ReadFrames(interactive=interactive):
+        motion_frame, motion_position = motion_video_frames.next()
 
-        # Converts current frame to grayscale for optical flow.
+        motion_frame_grayscale = cv2.cvtColor(motion_frame, cv2.COLOR_BGR2GRAY)
         frame_grayscale = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
         # Performs optical flow between previous and current frame.
         # Note: the numeric parameters will impact the look of the effect.
+        motion_optical_flow = cv2.calcOpticalFlowFarneback(
+            prev=previous_motion_frame_grayscale,
+            next=motion_frame_grayscale,
+            flow=None,
+            pyr_scale=.25,
+            levels=5,
+            winsize=15,
+            iterations=20,
+            poly_n=5,
+            poly_sigma=1.1,
+            flags=cv2.OPTFLOW_FARNEBACK_GAUSSIAN)
+
+        sum_motion_flows = numpy.add(motion_optical_flow, sum_motion_flows)
+
         optical_flow = cv2.calcOpticalFlowFarneback(
             prev=previous_frame_grayscale,
             next=frame_grayscale,
             flow=None,
-            pyr_scale=.5,
-            levels=3,
-            winsize=5,
-            iterations=1,
+            pyr_scale=.25,
+            levels=5,
+            winsize=15,
+            iterations=20,
             poly_n=5,
             poly_sigma=1.1,
-            flags=0)
+            flags=cv2.OPTFLOW_FARNEBACK_GAUSSIAN)
+
+        sum_frames_flows = numpy.add(optical_flow, sum_frames_flows)
+
+        input_video_weight = 1.0
+        motion_video_weight = 1.0
+
+        total_flow = numpy.add(
+            optical_flow * input_video_weight,
+            motion_optical_flow * motion_video_weight)
 
         # Creates a matrix of pixel coordinates of the same size as the image,
         # this is used to convert the values of the optical flow to motion
@@ -65,9 +87,11 @@ def GenerateFrames(
         # Note: We add the inverse of the optical flow because optical flow
         # values indicate where the motion vectors come from and we are looking
         # for the inverse, i.e where they are pointing to.
-        flow_multiplier = 2.0
-        motion_x = numpy.add(coords_x, -optical_flow[..., 0] * flow_multiplier)
-        motion_y = numpy.add(coords_y, -optical_flow[..., 1] * flow_multiplier)
+        motion_x = numpy.add(coords_x, -total_flow[..., 0])
+        motion_y = numpy.add(coords_y, -total_flow[..., 1])
+
+        sum_motion_x = numpy.add(coords_x, -sum_motion_flows[..., 0])
+        sum_motion_y = numpy.add(coords_y, -sum_motion_flows[..., 1])
 
         # Applies the motion vectors to the image buffer that contains the
         # previous calculated image (or first frame for first iteration).
@@ -79,31 +103,23 @@ def GenerateFrames(
             map1=motion_x,
             map2=motion_y,
             interpolation=cv2.INTER_LINEAR,
-            borderMode=cv2.BORDER_DEFAULT)
+            borderMode=cv2.BORDER_CONSTANT)
+        # TODO(davyrisso): Add sum of frame optical flows to motion (so the
+        # movement of the frame also impacts the motion of the motion video).
+        # E.g: drop on face should follow the face too.
 
+        # Calculates the transformed image for the current frame.
         frame_copy = frame.copy()
         cv2.remap(
             src=frame_copy,
             dst=frame_copy,
-            map1=motion_x,
-            map2=motion_y,
+            map1=sum_motion_x,
+            map2=sum_motion_y,
             interpolation=cv2.INTER_LINEAR,
-            borderMode=cv2.BORDER_DEFAULT)
+            borderMode=cv2.BORDER_CONSTANT)
 
-        # Adds the pixels of the current frame to the image buffer with a low
-        # opacity, so as to preserve some of the details of the frame.
-        # If we skip this step (or set the beta parameter to 0), then only the
-        # pixels of the first frame will be present throughout the video.
-        transformed_frame_weight = .0
-        cv2.addWeighted(
-            src1=image_buffer,
-            src2=frame_copy,
-            dst=image_buffer,
-            alpha=1 - transformed_frame_weight,
-            beta=transformed_frame_weight,
-            gamma=0)
-
-        frame_weight = .0
+        # Blends in pixels of the transformed current frame.
+        frame_weight = 0.25
         cv2.addWeighted(
             src1=image_buffer,
             src2=frame_copy,
@@ -112,36 +128,44 @@ def GenerateFrames(
             beta=frame_weight,
             gamma=0)
 
+        # Blends in pixels of the motion video.
+        motion_weight = 0.05
+        cv2.addWeighted(
+            src1=image_buffer,
+            src2=motion_frame,
+            dst=image_buffer,
+            alpha=1 - motion_weight,
+            beta=motion_weight,
+            gamma=0)
+
+        # Calculates edges with Canny method
+        motion_edges_weight = .0
+        motion_edges = cv2.Canny(motion_frame, 10, 50)
+        motion_edges_rgb = cv2.cvtColor(motion_edges, cv2.COLOR_GRAY2BGR)
+        # Blends in pixels of the edges.
+        cv2.addWeighted(
+            src1=image_buffer,
+            src2=motion_edges_rgb,
+            dst=image_buffer,
+            alpha=1 - motion_edges_weight,
+            beta=motion_edges_weight,
+            gamma=0)
+
         yield image_buffer, position
 
+        previous_motion_frame_grayscale = motion_frame_grayscale
         previous_frame_grayscale = frame_grayscale
 
 
-def main(input_video_path, output_video_path, start_frame=0, end_frame=None,
-         effect_start_frame=0, effect_end_frame=None, preview=False):
+def main(input_video_path, motion_video_path, output_video_path,
+         preview=False):
     input_video = video.VideoReader(file_path=input_video_path)
+    motion_video = video.VideoReader(file_path=motion_video_path)
     output_video = video.VideoWriter.FromReader(
         input_video, file_path=output_video_path)
 
-    if end_frame is None:
-        end_frame = input_video.frame_count
-
-    if effect_end_frame is None:
-        effect_end_frame = input_video.frame_count
-
-    effect_start_frame = max(effect_start_frame, start_frame)
-    effect_end_frame = min(effect_end_frame, end_frame)
-
-    print('\n'.join(['Starting motionmosh effect with parameters:',
-                     ' - input: %s' % input_video_path,
-                     ' - output: %s' % output_video_path,
-                     ' - video:',
-                     '   - start frame: %d' % start_frame,
-                     '   - end frame: %d' % end_frame,
-                     ' - effect:',
-                     '   - start frame: %d' % effect_start_frame,
-                     '   - effect end frame: %d' % effect_end_frame,
-                     '\n']))
+    start_frame = 0
+    end_frame = input_video.frame_count
 
     print('\n'.join(['Input video info:',
                      ' - size: %dx%d' % input_video.frame_size,
@@ -150,28 +174,32 @@ def main(input_video_path, output_video_path, start_frame=0, end_frame=None,
                      ' - codec code: %s' % input_video.fourcc,
                      '\n']))
 
+    print('\n'.join(['Motion video info:',
+                     ' - size: %dx%d' % motion_video.frame_size,
+                     ' - fps: %d' % motion_video.fps,
+                     ' - frame count: %d' % motion_video.frame_count,
+                     ' - codec code: %s' % motion_video.fourcc,
+                     '\n']))
+
     print('Generating frames...')
 
     # Gets a generator of transformed frames.
     generated_frames = GenerateFrames(
-        input_video,
-        start_frame=start_frame,
-        end_frame=end_frame,
-        effect_start_frame=effect_start_frame,
-        effect_end_frame=effect_end_frame,
-        interactive=preview)
+        input_video, motion_video, interactive=preview)
 
     for frame, position in output_video.WriteFrames(generated_frames):
-        sys.stdout.write(
-            'Progress: %d/%d (%.2f%%) \r' %
-            (position[0], end_frame,
-             float(position[0]) / float(end_frame) * 100))
-        sys.stdout.flush()
+        cv2.imshow('Preview', frame)
+        print(position)
+        # sys.stdout.write(
+        #     'Progress: %d/%d (%.2f)% \r' %
+        #     (position[0], end_frame,
+        #       float(position[0]) / float(end_frame) * 100))
+        # sys.stdout.flush()
 
-        if preview:
-            cv2.imshow('Preview', frame)
+        # if preview:
+        #     cv2.imshow('Preview', frame)
 
-    print('\nDone writing %s.' % output_video_path)
+    print('\nDone.')
 
 
 if __name__ == '__main__':
@@ -183,6 +211,12 @@ if __name__ == '__main__':
         'input_video_path',
         type=str,
         help='Input video path')
+
+    parser.add_argument(
+        'motion_video_path',
+        type=str,
+        help='Motion video path'
+    )
 
     parser.add_argument(
         'output_video_path',
@@ -227,9 +261,6 @@ if __name__ == '__main__':
 
     main(
         args.input_video_path,
+        args.motion_video_path,
         args.output_video_path,
-        start_frame=args.start_frame,
-        end_frame=args.end_frame,
-        effect_start_frame=args.effect_start_frame,
-        effect_end_frame=args.effect_end_frame,
         preview=bool(args.preview))

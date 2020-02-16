@@ -78,7 +78,7 @@ class VideoReader():
             if position_frames < start_frame:
                 continue
 
-            if position_frames > end_frame:
+            if end_frame is not None and position_frames > end_frame:
                 return
 
             if frame is not None:
@@ -147,7 +147,7 @@ class VideoWriter():
         the passed VideoReader."""
         return VideoWriter(
             file_path, frame_size=video_reader.frame_size, fps=video_reader.fps,
-            fourcc=video_reader.fourcc)
+            fourcc=DEFAULT_FOURCC)
 
     def WriteFrame(self, frame):
         pass
