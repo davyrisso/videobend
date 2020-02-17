@@ -42,12 +42,23 @@ class OpticalFlow():
             self.GetMotionVectors(flow))
 
     @staticmethod
-    def GetMotionVectors(flow, dtype=numpy.float32):
+    def GetMotionVectors(flow, threshold_x=0.0, threshold_y=0.0,
+                         multiplier_x=1.0, multiplier_y=1.0,
+                         dtype=numpy.float32):
+        # Creates an array of pixel coordinates.
         coords_y, coords_x, = numpy.indices(
             (flow.shape[0], flow.shape[1]), dtype=dtype)
 
-        motion_vectors_x = numpy.add(coords_x, -flow[..., 0])
-        motion_vectors_y = numpy.add(coords_y, -flow[..., 1])
+        # Calculates motion vectors:
+        # We apply the threshold and multipliers to the flow values and add
+        # the inverse of the resulting value to the coordinates created above.
+        # This converts the flow values in motion vectors.
+        motion_vectors_x = numpy.add(
+            coords_x,
+            - (flow[..., 0] * (flow[..., 0] >= threshold_x)) * multiplier_x)
+        motion_vectors_y = numpy.add(
+            coords_y,
+            -(flow[..., 1] * (flow[..., 1] >= threshold_y)) * multiplier_y)
 
         return (motion_vectors_x, motion_vectors_y)
 

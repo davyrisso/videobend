@@ -13,6 +13,8 @@ def GenerateFrames(
         input_video,
         start_frame, end_frame,
         effect_start_frame, effect_end_frame,
+        motion_multiplier_x, motion_multiplier_y,
+        motion_threshold_x, motion_threshold_y,
         frame_blend_weight=0.0):
     """Applies the effect and returns a generator over the generated frames."""
 
@@ -35,11 +37,18 @@ def GenerateFrames(
             if image_buffer is None:
                 image_buffer = frame.pixels.copy()
 
+            motion_vectors = optical_flow.GetMotionVectors(
+                optical_flow.flow,
+                multiplier_x=motion_multiplier_x,
+                multiplier_y=motion_multiplier_y,
+                threshold_x=motion_threshold_x,
+                threshold_y=motion_threshold_y)
+
             cv2.remap(
                 src=image_buffer,
                 dst=image_buffer,
-                map1=optical_flow.motion_vectors_x,
-                map2=optical_flow.motion_vectors_y,
+                map1=motion_vectors[0],
+                map2=motion_vectors[1],
                 interpolation=cv2.INTER_LINEAR,
                 borderMode=cv2.BORDER_DEFAULT)
 
@@ -67,7 +76,8 @@ def GenerateFrames(
 
 def main(input_video_path, output_video_path, start_frame=0, end_frame=None,
          effect_start_frame=0, effect_end_frame=None, frame_blend_weight=0,
-         preview=False):
+         motion_multiplier_x=1.0, motion_multiplier_y=1.0,
+         motion_threshold=0.0, preview=False):
     input_video = VideoReader(file_path=input_video_path)
     output_video = VideoWriter.FromReader(
         input_video, file_path=output_video_path)
@@ -108,7 +118,11 @@ def main(input_video_path, output_video_path, start_frame=0, end_frame=None,
         end_frame=end_frame,
         effect_start_frame=effect_start_frame,
         effect_end_frame=effect_end_frame,
-        frame_blend_weight=frame_blend_weight)
+        frame_blend_weight=frame_blend_weight,
+        motion_multiplier_x=motion_multiplier_x,
+        motion_multiplier_y=motion_multiplier_y,
+        motion_threshold_x=motion_threshold,
+        motion_threshold_y=motion_threshold)
 
     for frame in output_video.WriteFrames(generated_frames):
         sys.stdout.write(
@@ -177,6 +191,41 @@ if __name__ == '__main__':
               'images, otherwise only the first frame\'s pixels will be used.'))
 
     parser.add_argument(
+        '-m_threshold', '--motion_threshold',
+        metavar='<pixel_threshold>',
+        type=float,
+        default=None,
+        help=('Motion pixel threshold. Motion below this value is ignored. ' +
+              'Setting a value > 0 helps to keep slightly moving areas sharp.')
+    )
+
+    parser.add_argument(
+        '-m_mult_x', '--motion_multiplier_x',
+        metavar='<multiplier>',
+        type=float,
+        default=1.0,
+        help=('Multiplier to apply to the motion vectors along the x axis. ' +
+              'This value will be multiplied by the global motion multiplier.')
+    )
+
+    parser.add_argument(
+        '-m_mult_y', '--motion_multiplier_y',
+        metavar='<multiplier>',
+        type=float,
+        default=1.0,
+        help=('Multiplier to apply to the motion vectors along the y axis.' +
+              'This value will be multiplied by the global motion multiplier.')
+    )
+
+    parser.add_argument(
+        '-m_mult', '--motion_multiplier',
+        metavar='<multiplier>',
+        type=float,
+        default=1.0,
+        help='Multiplier to apply to the motion vectors.'
+    )
+
+    parser.add_argument(
         '--preview',
         action='count',
         default=0,
@@ -192,4 +241,7 @@ if __name__ == '__main__':
         effect_start_frame=args.effect_start_frame,
         effect_end_frame=args.effect_end_frame,
         frame_blend_weight=args.frame_blend_weight,
+        motion_multiplier_x=args.motion_multiplier_x * args.motion_multiplier,
+        motion_multiplier_y=args.motion_multiplier_y * args.motion_multiplier,
+        motion_threshold=args.motion_threshold,
         preview=bool(args.preview))
