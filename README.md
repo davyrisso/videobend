@@ -26,6 +26,11 @@ As script:
 $ python -m videobend.effects.motionmosh <input_video> <output_video> [-fx_s <effect_start>] [-fx_e <effect_end>]
 ```
 
+For help on the effects do:
+```sh
+$ python -m videobend.effects.motionmosh --help
+```
+
 ## Effects
 
 ### Motionmosh
