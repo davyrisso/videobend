@@ -1,26 +1,112 @@
-import cv2
-import numpy
+import os
+import queue
+import threading
+import time
 
-# Default codec for video output, as a 4 character code.
+import numpy
+import cv2
+
+from ..utils.frame import Frame
+
+VIDEO_READER_DEFAULT_QUEUE_SIZE = 128
+# Default codec for video writer, as a 4 character code.
 # (see http://www.fourcc.org/codecs.php)
-DEFAULT_FOURCC = cv2.VideoWriter_fourcc(*'XVID')
+VIDEO_WRITER_DEFAULT_FOURCC = int(cv2.VideoWriter_fourcc(*'mp4v'))
+VIDEO_WRITER_DEFAULT_API_PREFERENCE = int(cv2.CAP_FFMPEG)
+
+
+class VideoStream():
+
+    def __init__(self, file_path, queue_size=VIDEO_READER_DEFAULT_QUEUE_SIZE):
+        self.__file_path = file_path
+        self.__queue_size = queue_size
+        self.__video_capture = cv2.VideoCapture(file_path)
+
+        self.__capture_queue = queue.Queue(maxsize=queue_size)
+        self.__capture_stopped = False
+        self.__capture_thread = threading.Thread(target=self.__Update, args=())
+        self.__capture_thread.daemon = True
+
+    @property
+    def has_more_frames(self):
+        num_tries = 0
+        max_num_tries = 5
+
+        while (self.__capture_queue.qsize() == 0 and
+               not self.__capture_stopped and
+               num_tries < max_num_tries):
+            time.sleep(.1)
+            num_tries += 1
+
+        return self.__capture_queue.qsize() > 0
+
+    @property
+    def is_running(self):
+        return self.has_more_frames or not self.__capture_stopped
+
+    def Start(self):
+        self.__capture_thread.start()
+
+    def Stop(self):
+        self.__capture_stopped = True
+        self.__capture_thread.join()
+
+    def ReadFrame(self):
+        return self.__capture_queue.get()
+
+    def ReadFrames(self, start_frame=0, end_frame=None):
+        if end_frame is None:
+            end_frame = self.__video_capture.get(cv2.CAP_PROP_FRAME_COUNT)
+
+        self.Start()
+        while self.has_more_frames:
+            frame = self.ReadFrame()
+            if frame.position[0] < start_frame or frame.position[0] > end_frame:
+                continue
+            yield frame
+            cv2.waitKey(1)
+
+    def __Update(self):
+        while True:
+            if self.__capture_stopped:
+                break
+
+            if not self.__capture_queue.full():
+                retrieved, frame_pixels = self.__video_capture.read()
+
+                if not retrieved:
+                    self.__capture_stopped = True
+
+                frame_position_frames = self.__video_capture.get(
+                    cv2.CAP_PROP_POS_FRAMES)
+                frame_position_milliseconds = self.__video_capture.get(
+                    cv2.CAP_PROP_POS_MSEC)
+
+                if frame_pixels is not None:
+                    self.__capture_queue.put(
+                        Frame(
+                            frame_pixels,
+                            (frame_position_frames,
+                             frame_position_milliseconds)))
+                else:
+                    self.__capture_stopped = True
 
 
 class VideoReader():
-    """A convenience wrapper around cv2.VideoCapture."""
 
-    def __init__(self, file_path):
+    def __init__(
+            self, file_path, queue_size=VIDEO_READER_DEFAULT_QUEUE_SIZE):
+        """Constructor for a VideoReader.
+
+        Args:
+          - file_path: string. Path to the video file to read.
+                       Note: This can also be an image sequence pattern
+                      (e.g: img_%02d.jpg => img_01.jpg, img_02.jpg...)
+          - queue_size: int. Size of the frame queue (queue) size.
+        """
         self.__file_path = file_path
-
-        # Creates a capture to read video information, then releases it.
-        video_capture = cv2.VideoCapture(file_path)
-        self.__frame_count = int(video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
-        self.__frame_width = int(video_capture.get(cv2.CAP_PROP_FRAME_WIDTH))
-        self.__frame_heigth = int(video_capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        self.__fps = int(video_capture.get(cv2.CAP_PROP_FPS))
-        # Format code for the video.
-        self.__fourcc = int(video_capture.get(cv2.CAP_PROP_FOURCC))
-        video_capture.release()
+        self.__queue_size = queue_size
+        self.__video_capture = cv2.VideoCapture(file_path)
 
     @property
     def file_path(self):
@@ -28,90 +114,32 @@ class VideoReader():
 
     @property
     def frame_count(self):
-        return self.__frame_count
-
-    @property
-    def frame_width(self):
-        return self.__frame_width
-
-    @property
-    def frame_height(self):
-        return self.__frame_heigth
+        return self.__video_capture.get(cv2.CAP_PROP_FRAME_COUNT)
 
     @property
     def frame_size(self):
-        return (self.frame_width, self.frame_height)
+        return (
+            int(self.__video_capture.get(cv2.CAP_PROP_FRAME_WIDTH)),
+            int(self.__video_capture.get(cv2.CAP_PROP_FRAME_HEIGHT)))
 
     @property
     def fps(self):
-        return self.__fps
+        return int(self.__video_capture.get(cv2.CAP_PROP_FPS))
 
     @property
     def fourcc(self):
-        return self.__fourcc
+        return int(self.__video_capture.get(cv2.CAP_PROP_FOURCC))
 
-    @property
-    def length_seconds(self):
-        return float(self.__frame_count) / float(self.__fps)
-
-    def ReadFrames(self, start_frame=0, end_frame=None, interactive=False):
-        """Returns a generator over the video frames.
-
-        Args:
-            - start_frame: int. Frame number to start reading at.
-            - end_frame: int. Frame number to end reading at. None=last frame.
-            - interactive: bool. Set to true to enable frame visualization.
-
-        Yields:
-            A tuple of (frame, position).
-            frame is a numpy array containing RGB information for each pixel.
-            position is a tuple of (position_frame, position_millisecond),
-            indicating the read position in frame count and milliseconds.
-        """
-        video_capture = cv2.VideoCapture(self.file_path)
-
-        while video_capture.isOpened():
-            retrieved, frame = video_capture.read()
-            position_frames = int(video_capture.get(cv2.CAP_PROP_POS_FRAMES))
-            position_milliseconds = video_capture.get(cv2.CAP_PROP_POS_MSEC)
-
-            if position_frames < start_frame:
-                continue
-
-            if end_frame is not None and position_frames > end_frame:
-                return
-
-            if frame is not None:
-                yield (frame, (position_frames, position_milliseconds))
-            else:
-                video_capture.release()
-                return
-
-            if interactive:
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    return
-
-    def ReadFrameAt(self, frame_position):
-        if frame_position < 0:
-            raise Exception('Invalid frame position: Must be > 0')
-        if frame_position > self.frame_count:
-            raise Exception(
-                'Invalid frame position: Max value = %d' %
-                self.frame_count)
-
-        video_capture = cv2.VideoCapture(self.file_path)
-        for _ in range(frame_position):
-            video_capture.read()
-        _, frame = video_capture.read()
-        video_capture.release()
-
-        return frame
+    def GetStream(self):
+        return VideoStream(self.file_path, self.__queue_size)
 
 
 class VideoWriter():
     """A convenience wrapper around cv2.VideoWriter."""
 
-    def __init__(self, file_path, frame_size, fps, fourcc=DEFAULT_FOURCC):
+    def __init__(
+            self, file_path, frame_size, fps,
+            fourcc=VIDEO_WRITER_DEFAULT_FOURCC):
         self.__file_path = file_path
         self.__frame_size = frame_size
         self.__fps = fps
@@ -146,19 +174,25 @@ class VideoWriter():
         """Creates a VideoWriter with the same properties (size, fps, etc.) as
         the passed VideoReader."""
         return VideoWriter(
-            file_path, frame_size=video_reader.frame_size, fps=video_reader.fps,
-            fourcc=DEFAULT_FOURCC)
-
-    def WriteFrame(self, frame):
-        pass
+            file_path,
+            frame_size=video_reader.frame_size,
+            fps=video_reader.fps,
+            fourcc=VIDEO_WRITER_DEFAULT_FOURCC)
 
     def WriteFrames(self, frames):
-        video_writer = cv2.VideoWriter(
-            filename=self.file_path, fourcc=self.fourcc, fps=self.fps,
-            frameSize=self.frame_size)
+        directory = os.path.split(self.file_path)[0]
+        if directory and not os.path.exists(directory):
+            os.makedirs(directory)
 
-        for frame, position in frames:
-            video_writer.write(frame)
-            yield frame, position
+        video_writer = cv2.VideoWriter(
+            filename=self.file_path,
+            fourcc=self.fourcc,
+            fps=self.fps,
+            frameSize=(self.frame_width, self.frame_height),
+            apiPreference=VIDEO_WRITER_DEFAULT_API_PREFERENCE)
+
+        for frame in frames:
+            video_writer.write(frame.pixels)
+            yield frame
 
         video_writer.release()
