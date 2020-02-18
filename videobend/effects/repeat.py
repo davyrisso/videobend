@@ -39,23 +39,23 @@ def GenerateFrames(
 
     def GeneratedFrames():
         image_buffer = None
-        motion_repeat_vectors = None
+        remap_repeat_vectors = None
 
         for frame, optical_flow in OpticalFlowGenerator(frames).GenerateFlow():
             if image_buffer is None:
                 image_buffer = frame.pixels.copy()
 
-            # Mosh effect motion vectors calculation.
-            motion_vectors = optical_flow.GetMotionVectors(
+            # Mosh effect remap vectors calculation.
+            remap_vectors = optical_flow.GetRemapVectors(
                 optical_flow.flow,
                 multiplier_x=mosh_effect_motion_multiplier_x,
                 multiplier_y=mosh_effect_motion_multiplier_y,
                 threshold_x=mosh_effect_motion_threshold_x,
                 threshold_y=mosh_effect_motion_threshold_y)
 
-            # Repeat effect motion vectors calculation.
+            # Repeat effect remap vectors calculation.
             if frame.position_frames == repeat_effect_start_frame + 1:
-                motion_repeat_vectors = optical_flow.GetMotionVectors(
+                motion_repeat_vectors = optical_flow.GetRemapVectors(
                     optical_flow.flow,
                     multiplier_x=repeat_effect_motion_multiplier_x,
                     multiplier_y=repeat_effect_motion_multiplier_y,
@@ -79,8 +79,8 @@ def GenerateFrames(
                 cv2.remap(
                     src=image_buffer,
                     dst=image_buffer,
-                    map1=motion_vectors[0],
-                    map2=motion_vectors[1],
+                    map1=remap_vectors[0],
+                    map2=remap_vectors[1],
                     interpolation=cv2.INTER_LINEAR,
                     borderMode=cv2.BORDER_DEFAULT)
 
@@ -89,8 +89,8 @@ def GenerateFrames(
                 cv2.remap(
                     src=frame.pixels,
                     dst=frame.pixels,
-                    map1=optical_flow.motion_vectors_x,
-                    map2=optical_flow.motion_vectors_y,
+                    map1=optical_flow.remap_vectors_x,
+                    map2=optical_flow.remap_vectors_y,
                     interpolation=cv2.INTER_LINEAR,
                     borderMode=cv2.BORDER_DEFAULT)
                 cv2.addWeighted(
@@ -192,12 +192,14 @@ if __name__ == '__main__':
         description=('Uses Optical Flow to reproduce a motion repeat effect.'))
 
     parser.add_argument(
-        'input_video_path',
+        '-i', '--input_video_path',
+        required=True,
         type=str,
         help='Input video path')
 
     parser.add_argument(
-        'output_video_path',
+        '-o', '--output_video_path',
+        required=True,
         type=str,
         help='Output video file path')
 

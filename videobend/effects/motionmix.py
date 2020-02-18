@@ -185,7 +185,14 @@ if __name__ == '__main__':
         metavar='<0.0-1.0>',
         type=float,
         default=0.0,
-        help='Weight of the motion ')
+        help='Weight of the motion for the first input video')
+
+    parser.add_argument(
+        '-m_w_2', '--input_2_motion_weight',
+        metavar='<0.0-1.0>',
+        type=float,
+        default=0.0,
+        help='Weight of the motion for the second input video')
 
     parser.add_argument(
         '--preview',

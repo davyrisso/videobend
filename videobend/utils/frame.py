@@ -1,8 +1,19 @@
 
 
 class Frame():
+    """A class that represents a Frame.
+
+    Exposes the frame's pixels as well as its position in a video.
+    """
 
     def __init__(self, pixels, position):
+        """Constructor.
+
+        Args:
+            pixels: A numpy array of pixel RGB values.
+            position: A tuple of (position_frames, position_milliseconds) that
+                represents the position of the frame in a video.
+        """
         self.__pixels = pixels
         self.__position = position
 

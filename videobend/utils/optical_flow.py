@@ -4,6 +4,7 @@ import collections
 import numpy
 import cv2
 
+# Configuration object for Farneback Optical Flow algorithm. See:
 # https://docs.opencv.org/2.4/modules/video/doc/motion_analysis_and_object_tracking.html#calcopticalflowfarneback
 OpticalFlowConfig = collections.namedtuple(
     'OpticalFlowConfig', [
@@ -15,6 +16,7 @@ OpticalFlowConfig = collections.namedtuple(
         'poly_sigma',
         'flags'])
 
+# Default values for Optical Flow algorithm.
 OPTFLOW_DEFAULT_CONFIG_PYR_SCALE = .5
 OPTFLOW_DEFAULT_CONFIG_LEVELS = 3
 OPTFLOW_DEFAULT_CONFIG_WINSIZE = 5
@@ -23,6 +25,7 @@ OPTFLOW_DEFAULT_CONFIG_POLY_N = 5
 OPTFLOW_DEFAULT_CONFIG_POLY_SIGMA = 1.1
 OPTFLOW_DEFAULT_CONFIG_FLAGS = cv2.OPTFLOW_FARNEBACK_GAUSSIAN
 
+# Default config for Optical Flow algorithm.
 OPTFLOW_DEFAULT_CONFIG = OpticalFlowConfig(
     pyr_scale=OPTFLOW_DEFAULT_CONFIG_PYR_SCALE,
     levels=OPTFLOW_DEFAULT_CONFIG_LEVELS,
@@ -34,41 +37,98 @@ OPTFLOW_DEFAULT_CONFIG = OpticalFlowConfig(
 
 
 class OpticalFlow():
+    """A class that holds a calculated dense optical flow.
+
+    Provides convenience methods such as GetRemapVectors.
+    """
 
     def __init__(self, flow, dtype=numpy.float32):
+        """Constructor.
+
+        Args:
+            flow: A numpy array of flow vectors as calculated with the Farneback
+                algorithm.
+            dtype: The numpy dtype for the array. Default: numpy.float32.
+        """
         self.__dtype = dtype
         self.__flow = flow
-        self.__motion_vectors_x, self.__motion_vectors_y = (
-            self.GetMotionVectors(flow))
 
     @staticmethod
-    def GetMotionVectors(flow, threshold_x=0.0, threshold_y=0.0,
-                         multiplier_x=1.0, multiplier_y=1.0,
-                         dtype=numpy.float32):
-        # Creates an array of pixel coordinates.
+    def GetRemapVectors(flow, threshold_x=0.0, threshold_y=0.0,
+                        multiplier_x=1.0, multiplier_y=1.0,
+                        dtype=numpy.float32):
+        """Calculates remap vectors from a calculated dense optical flow.
+
+        These vectors are used to remap (transform) a frame with the cv2.remap()
+        function. We can't just use the vectors from the flow as remap() needs
+        the coordinates from where a point comes from in order to transform it.
+
+        Args:
+            flow: A numpy array of flow vectors as calculated with the Farneback
+                algorithm.
+            threshold_x: float. A scalar that sets the minimal value in pixels
+                for a flow vector to be taken into account along the x axis.
+                This is used to ignore small movements and help keep static
+                areas sharp when applying a mosh effect. Default: 0.0.
+            threshold_y: float. A scalar that sets the minimal value in pixels
+                for a flow vector to be taken into account along the y axis.
+                This is used to ignore small movements and help keep static
+                areas sharp when applying a mosh effect. Default: 0.0.
+            multiplier_x: float. A scalar to multiply the flow vectors by on
+                the x axis.
+            multiplier_y: float. A scalar to multiply the flow vectors by on
+                the y axis.
+            dtype: The numpy dtype of the resulting vectors. Default: float32.
+
+        Returns:
+            A tuple of (vectors_x, vectors_y) of remap vectors ready to be used
+            as map in cv2.remap().
+        """
+        # Creates an array of pixel coordinates ([[0,0], [0,1]...], ...).
         coords_y, coords_x, = numpy.indices(
             (flow.shape[0], flow.shape[1]), dtype=dtype)
 
-        # Calculates motion vectors:
+        # Calculates remap vectors:
         # We apply the threshold and multipliers to the flow values and add
         # the inverse of the resulting value to the coordinates created above.
-        # This converts the flow values in motion vectors.
-        motion_vectors_x = numpy.add(
+        # This converts the flow values in remap vectors.
+        remap_vectors_x = numpy.add(
             coords_x,
-            - (flow[..., 0] * (flow[..., 0] >= threshold_x)) * multiplier_x)
-        motion_vectors_y = numpy.add(
+            - (flow[..., 0] * (abs(flow[..., 0]) >= threshold_x)) * multiplier_x)
+        remap_vectors_y = numpy.add(
             coords_y,
-            -(flow[..., 1] * (flow[..., 1] >= threshold_y)) * multiplier_y)
+            -(flow[..., 1] * (abs(flow[..., 1]) >= threshold_y)) * multiplier_y)
 
-        return (motion_vectors_x, motion_vectors_y)
-
-    @classmethod
-    def Like(cls, flow):
-        return cls(numpy.zeros_like(flow.flow), dtype=flow.dtype)
+        return (remap_vectors_x, remap_vectors_y)
 
     @classmethod
-    def Add(cls, flow_1, flow_2, dtype=numpy.float32):
-        return cls(numpy.add(flow_1.flow, flow_2.flow), dtype=dtype)
+    def Like(cls, optical_flow):
+        """Creates an empty flow (0 vectors) of the same shape and dtype
+        as the passed OpticalFlow object.
+
+        Args:
+            optical_flow: An OpticalFlow object.
+
+        Returns:
+            A new OpticalFlow object of the same shape and dtype as the passed
+            object.
+        """
+        return cls(numpy.zeros_like(optical_flow.flow),
+                   dtype=optical_flow.dtype)
+
+    @classmethod
+    def Add(cls, dtype=numpy.float32, *flows):
+        """Adds two OpticalFlow objects (i.e adds their flows).
+
+        Args:
+            flow_1: An OpticalFlow object.
+            flow_2: An OpticalFlow object.
+
+        Returns:
+            A new OpticalFlow object which flow is the sum of the passed flows.
+        """
+        return cls(
+            numpy.sum([flow.flow for flow in flows], axis=0), dtype=dtype)
 
     @property
     def flow(self):
@@ -78,31 +138,37 @@ class OpticalFlow():
     def dtype(self):
         return self.__dtype
 
-    @property
-    def motion_vectors_x(self):
-        return self.__motion_vectors_x
-
-    @property
-    def motion_vectors_y(self):
-        return self.__motion_vectors_y
-
-    @property
-    def motion_vectors(self):
-        return numpy.stack(
-            (self.motion_vectors_x, self.motion_vectors_y), axis=1)
-
 
 class OpticalFlowGenerator():
+    """A class that generates OpticalFlows based on an iterable of frames."""
 
     def __init__(self, frames, config=OPTFLOW_DEFAULT_CONFIG):
+        """Constructor.
+
+        Args:
+            frames: An iterable of utils.Frame. The frames for which to
+                calculate the optical flow.
+        """
         self.__frames = frames
         self.__config = config
 
     @staticmethod
     def GetFlow(frames, config=OPTFLOW_DEFAULT_CONFIG):
+        """Returns a generator of OpticalFlow objects for the passed frames.
+
+        Args:
+            frames: An iterable of utils.Frame
+            config: An OpticalFlowConfig namedtuple. Configuration for the
+                Farneback algorithm.
+
+        Yields:
+            OpticalFlow objects for each frame in the passed iterable.
+        """
         previous_frame_pixels_grayscale = None
 
         for frame in frames:
+            # Converts the frame to grayscale, as this is what the Farneback
+            # alrogithm uses.
             # TODO(davyrisso): Play on contrast of base frame.
             # E.g: frame_pixels_grayscale = frame_pixels_grayscale * 5.0.
             frame_pixels_grayscale = cv2.cvtColor(
@@ -110,6 +176,8 @@ class OpticalFlowGenerator():
             if previous_frame_pixels_grayscale is None:
                 previous_frame_pixels_grayscale = frame_pixels_grayscale
 
+            # Calculates dense optical flow with the Farneback alrgorithm
+            # between the previous and current frames.
             optical_flow = cv2.calcOpticalFlowFarneback(
                 prev=previous_frame_pixels_grayscale,
                 next=frame_pixels_grayscale,
