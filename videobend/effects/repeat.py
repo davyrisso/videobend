@@ -4,6 +4,7 @@ import sys
 import numpy
 import cv2
 
+from ..utils.constants import BORDER_MODES, DEFAULT_BORDER_VALUE, INTERPOLATION_METHODS
 from ..utils.frame import Frame
 from ..utils.optical_flow import OpticalFlow, OpticalFlowGenerator
 from ..utils.video import VideoReader, VideoWriter
@@ -18,7 +19,7 @@ def GenerateFrames(
         mosh_effect_start_frame, mosh_effect_end_frame,
         mosh_effect_motion_multiplier_x, mosh_effect_motion_multiplier_y,
         mosh_effect_motion_threshold_x, mosh_effect_motion_threshold_y,
-        frame_blend_weight=0.0):
+        frame_blend_weight, interpolation_method, border_mode):
     """Applies the effect and returns a generator over the generated frames."""
 
     effects_start_frame = min(
@@ -39,23 +40,15 @@ def GenerateFrames(
 
     def GeneratedFrames():
         image_buffer = None
-        remap_repeat_vectors = None
+        repeat_remap_vectors = None
 
         for frame, optical_flow in OpticalFlowGenerator(frames).GenerateFlow():
             if image_buffer is None:
                 image_buffer = frame.pixels.copy()
 
-            # Mosh effect remap vectors calculation.
-            remap_vectors = optical_flow.GetRemapVectors(
-                optical_flow.flow,
-                multiplier_x=mosh_effect_motion_multiplier_x,
-                multiplier_y=mosh_effect_motion_multiplier_y,
-                threshold_x=mosh_effect_motion_threshold_x,
-                threshold_y=mosh_effect_motion_threshold_y)
-
             # Repeat effect remap vectors calculation.
             if frame.position_frames == repeat_effect_start_frame + 1:
-                motion_repeat_vectors = optical_flow.GetRemapVectors(
+                repeat_remap_vectors = optical_flow.GetRemapVectors(
                     optical_flow.flow,
                     multiplier_x=repeat_effect_motion_multiplier_x,
                     multiplier_y=repeat_effect_motion_multiplier_y,
@@ -68,31 +61,41 @@ def GenerateFrames(
                 cv2.remap(
                     src=image_buffer,
                     dst=image_buffer,
-                    map1=motion_repeat_vectors[0],
-                    map2=motion_repeat_vectors[1],
-                    interpolation=cv2.INTER_LINEAR,
-                    borderMode=cv2.BORDER_DEFAULT)
+                    map1=repeat_remap_vectors[0],
+                    map2=repeat_remap_vectors[1],
+                    interpolation=interpolation_method,
+                    borderMode=border_mode,
+                    borderValue=DEFAULT_BORDER_VALUE)
 
             # Mosh effect.
             if (frame.position_frames >= mosh_effect_start_frame and
                     frame.position_frames <= mosh_effect_end_frame):
+                remap_vectors = optical_flow.GetRemapVectors(
+                    optical_flow.flow,
+                    multiplier_x=mosh_effect_motion_multiplier_x,
+                    multiplier_y=mosh_effect_motion_multiplier_y,
+                    threshold_x=mosh_effect_motion_threshold_x,
+                    threshold_y=mosh_effect_motion_threshold_y)
+
                 cv2.remap(
                     src=image_buffer,
                     dst=image_buffer,
                     map1=remap_vectors[0],
                     map2=remap_vectors[1],
-                    interpolation=cv2.INTER_LINEAR,
-                    borderMode=cv2.BORDER_DEFAULT)
+                    interpolation=interpolation_method,
+                    borderMode=border_mode,
+                    borderValue=DEFAULT_BORDER_VALUE)
 
             # Frame blending.
             if frame_blend_weight > 0:
                 cv2.remap(
                     src=frame.pixels,
                     dst=frame.pixels,
-                    map1=optical_flow.remap_vectors_x,
-                    map2=optical_flow.remap_vectors_y,
-                    interpolation=cv2.INTER_LINEAR,
-                    borderMode=cv2.BORDER_DEFAULT)
+                    map1=remap_vectors[0],
+                    map2=remap_vectors[1],
+                    interpolation=interpolation_method,
+                    borderMode=border_mode,
+                    borderValue=DEFAULT_BORDER_VALUE)
                 cv2.addWeighted(
                     src1=image_buffer,
                     src2=frame.pixels,
@@ -112,12 +115,11 @@ def main(input_video_path, output_video_path, start_frame=0, end_frame=None,
          repeat_effect_motion_multiplier_x=1.0,
          repeat_effect_motion_multiplier_y=1.0,
          mosh_effect_start_frame=0, mosh_effect_end_frame=None,
-         mosh_effect_motion_threshold=0,
+         mosh_effect_motion_threshold=0.0,
          mosh_effect_motion_multiplier_x=1.0,
          mosh_effect_motion_multiplier_y=1.0,
-         frame_blend_weight=0,
-         motion_multiplier_x=1.0, motion_multiplier_y=1.0,
-         motion_threshold=0.0, preview=False):
+         frame_blend_weight=0.0,
+         interpolation_method=0, border_mode=1, preview=False):
     input_video = VideoReader(file_path=input_video_path)
     output_video = VideoWriter.FromReader(
         input_video, file_path=output_video_path)
@@ -171,7 +173,9 @@ def main(input_video_path, output_video_path, start_frame=0, end_frame=None,
         mosh_effect_motion_multiplier_y=mosh_effect_motion_multiplier_y,
         mosh_effect_motion_threshold_x=mosh_effect_motion_threshold,
         mosh_effect_motion_threshold_y=mosh_effect_motion_threshold,
-        frame_blend_weight=frame_blend_weight)
+        frame_blend_weight=frame_blend_weight,
+        interpolation_method=interpolation_method,
+        border_mode=border_mode)
 
     for frame in output_video.WriteFrames(generated_frames):
         sys.stdout.write(
@@ -328,6 +332,23 @@ if __name__ == '__main__':
     )
 
     parser.add_argument(
+        '--interpolation_method',
+        metavar='<0-4>',
+        type=int,
+        default=0,
+        help=(
+            'Interpolation method. Values: %s. Default: 0 (%s).' % (
+                INTERPOLATION_METHODS, INTERPOLATION_METHODS[0])))
+
+    parser.add_argument(
+        '--border_mode',
+        metavar='<0-16>',
+        type=int,
+        default=1,
+        help=(
+            'Border mode. Values: %s. Default: 1 (%s).' % (
+                BORDER_MODES, BORDER_MODES[1])))
+    parser.add_argument(
         '--preview',
         action='count',
         default=0,
@@ -362,5 +383,8 @@ if __name__ == '__main__':
             args.mosh_effect_motion_multiplier),
 
         frame_blend_weight=args.frame_blend_weight,
+
+        interpolation_method=args.interpolation_method,
+        border_mode=args.border_mode,
 
         preview=bool(args.preview))

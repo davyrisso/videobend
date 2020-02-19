@@ -4,6 +4,7 @@ import sys
 import numpy
 import cv2
 
+from ..utils.constants import BORDER_MODES, DEFAULT_BORDER_VALUE, INTERPOLATION_METHODS
 from ..utils.frame import Frame
 from ..utils.optical_flow import OpticalFlow, OpticalFlowGenerator
 from ..utils.video import VideoReader, VideoWriter
@@ -22,7 +23,9 @@ def GenerateFrames(
         input_2_motion_multiplier,
         input_2_motion_threshold,
         input_1_frame_blend_weight,
-        input_2_frame_blend_weight):
+        input_2_frame_blend_weight,
+        interpolation_method,
+        border_mode):
     """Applies the effect and returns a generator over the generated frames."""
 
     input_1_frames = input_video_1.GetStream().ReadFrames(
@@ -58,8 +61,8 @@ def GenerateFrames(
                 dst=image_buffer,
                 map1=remap_vectors[0],
                 map2=remap_vectors[1],
-                interpolation=cv2.INTER_LINEAR,
-                borderMode=cv2.BORDER_DEFAULT)
+                interpolation=interpolation_method,
+                borderMode=border_mode)
 
             if input_1_frame_blend_weight > 0:
                 input_1_remap_vectors = OpticalFlow.GetRemapVectors(
@@ -72,8 +75,8 @@ def GenerateFrames(
                     dst=input_1_frame.pixels,
                     map1=input_1_remap_vectors[0],
                     map2=input_1_remap_vectors[1],
-                    interpolation=cv2.INTER_LINEAR,
-                    borderMode=cv2.BORDER_DEFAULT)
+                    interpolation=interpolation_method,
+                    borderMode=border_mode)
 
                 cv2.addWeighted(
                     src1=image_buffer,
@@ -94,8 +97,8 @@ def GenerateFrames(
                     dst=input_2_frame.pixels,
                     map1=input_2_remap_vectors[0],
                     map2=input_2_remap_vectors[1],
-                    interpolation=cv2.INTER_LINEAR,
-                    borderMode=cv2.BORDER_DEFAULT)
+                    interpolation=interpolation_method,
+                    borderMode=border_mode)
 
                 cv2.addWeighted(
                     src1=image_buffer,
@@ -125,6 +128,8 @@ def main(input_video_1_path,
          input_2_motion_threshold=0.0,
          input_1_frame_blend_weight=0.0,
          input_2_frame_blend_weight=0.0,
+         interpolation_method=0,
+         border_mode=1,
          preview=False):
     input_video_1 = VideoReader(file_path=input_video_1_path)
     input_video_2 = VideoReader(file_path=input_video_2_path)
@@ -154,7 +159,9 @@ def main(input_video_1_path,
         input_2_motion_multiplier=input_2_motion_multiplier,
         input_2_motion_threshold=input_2_motion_threshold,
         input_1_frame_blend_weight=input_1_frame_blend_weight,
-        input_2_frame_blend_weight=input_2_frame_blend_weight
+        input_2_frame_blend_weight=input_2_frame_blend_weight,
+        interpolation_method=interpolation_method,
+        border_mode=border_mode
     )
 
     for frame in output_video.WriteFrames(generated_frames):
@@ -285,6 +292,24 @@ if __name__ == '__main__':
               'images, otherwise only the first frame\'s pixels will be used.'))
 
     parser.add_argument(
+        '--interpolation_method',
+        metavar='<0-4>',
+        type=int,
+        default=0,
+        help=(
+            'Interpolation method. Values: %s. Default: 0 (%s).' % (
+                INTERPOLATION_METHODS, INTERPOLATION_METHODS[0])))
+
+    parser.add_argument(
+        '--border_mode',
+        metavar='<0-16>',
+        type=int,
+        default=1,
+        help=(
+            'Border mode. Values: %s. Default: 1 (%s).' % (
+                BORDER_MODES, BORDER_MODES[1])))
+
+    parser.add_argument(
         '--preview',
         action='count',
         default=0,
@@ -308,4 +333,6 @@ if __name__ == '__main__':
         input_2_motion_threshold=args.input_2_motion_threshold,
         input_1_frame_blend_weight=args.input_1_frame_blend_weight,
         input_2_frame_blend_weight=args.input_2_frame_blend_weight,
+        interpolation_method=args.interpolation_method,
+        border_mode=args.border_mode,
         preview=bool(args.preview))

@@ -73,61 +73,63 @@ def GenerateFrames(
         # the calculated remap vectors.
         image_buffer = None
 
-        # We keep the last n optical flows and frames in order to apply the sum
-        # of the last n optical flows to the frame at t-n.
-        # (n = motion_trail_lenght)
-        optical_flow_history = []
-        frame_history = []
+        history = []
 
         for frame, optical_flow in OpticalFlowGenerator(frames).GenerateFlow():
-            # Stores the pixels of the first frame in the image buffer.
             if image_buffer is None:
-                image_buffer = frame.pixels.copy()
+                image_buffer = numpy.zeros_like(frame.pixels)
 
-            if not len(optical_flow_history):
-                optical_flow_history.append(OpticalFlow.Like(optical_flow))
+            if not len(history):
+                history.append(
+                    (numpy.zeros_like(frame.pixels),
+                     OpticalFlow.Like(optical_flow)))
 
-            frame_history.append(frame)
-            frame_history = frame_history[-motion_trail_lenght:]
+            history.append((frame.pixels, optical_flow))
+            history = history[-motion_trail_lenght:]
 
-            optical_flow_history.append(optical_flow)
-            optical_flow_history = optical_flow_history[-motion_trail_lenght:]
+            for history_frame_pixels, history_optical_flow in history:
+                remap_vectors = OpticalFlow.GetRemapVectors(
+                    history_optical_flow.flow)
 
-            sum_optical_flows = OpticalFlow.Add(*optical_flow_history)
-
-            # Retrieves the remap vectors and applies thresholds and
-            # multipliers.
-            remap_vectors = sum_optical_flows.GetRemapVectors(
-                sum_optical_flows.flow)
-
-            # Applies the estimated movement of the current frame to the
-            # image buffer.
-            cv2.remap(
-                src=frame.pixels,
-                dst=image_buffer,
-                map1=remap_vectors[0],
-                map2=remap_vectors[1],
-                interpolation=cv2.INTER_LINEAR,
-                borderMode=cv2.BORDER_DEFAULT)
-
-            # Blends in the current transformed frame if blend weight > 0.
-            if frame_blend_weight > 0:
-                # We first transform the frame by applying the remap vectors.
                 cv2.remap(
-                    src=frame.pixels,
-                    dst=frame.pixels,
-                    map1=optical_flow.remap_vectors_x,
-                    map2=optical_flow.remap_vectors_y,
+                    src=history_frame_pixels,
+                    dst=history_frame_pixels,
+                    map1=remap_vectors[0],
+                    map2=remap_vectors[1],
                     interpolation=cv2.INTER_LINEAR,
                     borderMode=cv2.BORDER_DEFAULT)
-                # We then blend in the resulting frame with the image buffer.
-                cv2.addWeighted(
-                    src1=image_buffer,
-                    src2=frame.pixels,
-                    dst=image_buffer,
-                    alpha=1 - frame_blend_weight,
-                    beta=frame_blend_weight,
-                    gamma=0)
+
+            # sum_optical_flows = OpticalFlow.Add(*optical_flow_history)
+
+            # remap_vectors = sum_optical_flows.GetRemapVectors(
+            #     sum_optical_flows.flow)
+
+            # cv2.remap(
+            #     src=frame.pixels,
+            #     dst=image_buffer,
+            #     map1=remap_vectors[0],
+            #     map2=remap_vectors[1],
+            #     interpolation=cv2.INTER_LINEAR,
+            #     borderMode=cv2.BORDER_DEFAULT)
+
+            # # Blends in the current transformed frame if blend weight > 0.
+            # if frame_blend_weight > 0:
+            #     # We first transform the frame by applying the remap vectors.
+            #     cv2.remap(
+            #         src=frame.pixels,
+            #         dst=frame.pixels,
+            #         map1=optical_flow.remap_vectors_x,
+            #         map2=optical_flow.remap_vectors_y,
+            #         interpolation=cv2.INTER_LINEAR,
+            #         borderMode=cv2.BORDER_DEFAULT)
+            #     # We then blend in the resulting frame with the image buffer.
+            #     cv2.addWeighted(
+            #         src1=image_buffer,
+            #         src2=frame.pixels,
+            #         dst=image_buffer,
+            #         alpha=1 - frame_blend_weight,
+            #         beta=frame_blend_weight,
+            #         gamma=0)
 
             yield Frame(image_buffer, frame.position)
 

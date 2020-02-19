@@ -25,6 +25,7 @@ def GenerateFrames(
         effect_start_frame, effect_end_frame,
         motion_multiplier_x, motion_multiplier_y,
         motion_threshold_x, motion_threshold_y,
+        motion_trail_lenght,
         frame_blend_weight, interpolation_method, border_mode):
     """Applies the effect and returns a generator over the resulting frames.
 
@@ -46,6 +47,7 @@ def GenerateFrames(
             to be taken into account on the x axis.
         motion_threshold_y: float. Minimum value for an estimated motion vector
             to be taken into account on the y axis.
+        motion_trail_lenght: int. Motion trail lenght in number of frames.
         frame_blend_weight: float. How much the current transformed frame should
             be blended with the result frame.
         interpolation_method: int. Interpolation method (value from 0 to 4). See
@@ -75,24 +77,33 @@ def GenerateFrames(
         # the calculated remap vectors.
         image_buffer = None
 
+        # We keep the last n optical flows and frames in order to apply the sum
+        # of the last n optical flows to the frame at t-n.
+        # (n = motion_trail_lenght)
+        optical_flow_history = []
+        frame_history = []
+
         for frame, optical_flow in OpticalFlowGenerator(frames).GenerateFlow():
             # Stores the pixels of the first frame in the image buffer.
             if image_buffer is None:
                 image_buffer = frame.pixels.copy()
 
-            # Retrieves the remap vectors and applies thresholds and
-            # multipliers.
-            remap_vectors = optical_flow.GetRemapVectors(
-                optical_flow.flow,
-                multiplier_x=motion_multiplier_x,
-                multiplier_y=motion_multiplier_y,
-                threshold_x=motion_threshold_x,
-                threshold_y=motion_threshold_y)
+            if not len(optical_flow_history):
+                optical_flow_history.append(OpticalFlow.Like(optical_flow))
 
-            # Applies the estimated movement of the current frame to the
-            # image buffer.
+            frame_history.append(frame)
+            frame_history = frame_history[-motion_trail_lenght:]
+
+            optical_flow_history.append(optical_flow)
+            optical_flow_history = optical_flow_history[-motion_trail_lenght:]
+
+            sum_optical_flows = OpticalFlow.Add(*optical_flow_history)
+
+            remap_vectors = sum_optical_flows.GetRemapVectors(
+                sum_optical_flows.flow)
+
             cv2.remap(
-                src=image_buffer,
+                src=frame.pixels,
                 dst=image_buffer,
                 map1=remap_vectors[0],
                 map2=remap_vectors[1],
@@ -106,8 +117,8 @@ def GenerateFrames(
                 cv2.remap(
                     src=frame.pixels,
                     dst=frame.pixels,
-                    map1=remap_vectors[0],
-                    map2=remap_vectors[1],
+                    map1=optical_flow.remap_vectors_x,
+                    map2=optical_flow.remap_vectors_y,
                     interpolation=interpolation_method,
                     borderMode=border_mode,
                     borderValue=DEFAULT_BORDER_VALUE)
@@ -129,7 +140,8 @@ def GenerateFrames(
 def main(input_video_path, output_video_path, start_frame=0, end_frame=None,
          effect_start_frame=0, effect_end_frame=None,
          motion_multiplier_x=1.0, motion_multiplier_y=1.0,
-         motion_threshold=0.0, frame_blend_weight=0,
+         motion_threshold=0.0, motion_trail_lenght=None,
+         frame_blend_weight=0.0,
          interpolation_method=0, border_mode=1, preview=False):
     input_video = VideoReader(file_path=input_video_path)
     output_video = VideoWriter.FromReader(
@@ -140,6 +152,9 @@ def main(input_video_path, output_video_path, start_frame=0, end_frame=None,
 
     if effect_end_frame is None:
         effect_end_frame = input_video.frame_count
+
+    if motion_trail_lenght is None:
+        motion_trail_lenght = input_video.frame_count
 
     effect_start_frame = max(effect_start_frame, start_frame)
     effect_end_frame = min(effect_end_frame, end_frame)
@@ -157,9 +172,6 @@ def main(input_video_path, output_video_path, start_frame=0, end_frame=None,
                          motion_multiplier_x, motion_multiplier_y),
                      '   - motion threshold: %f' % motion_threshold,
                      '   - frame blend weight: %f' % frame_blend_weight,
-                     '   - interpolation method: %s' % (
-                         INTERPOLATION_METHODS[interpolation_method]),
-                     '   - border mode: %s' % BORDER_MODES[border_mode],
                      '\n']))
 
     print('\n'.join(['Input video info:',
@@ -181,8 +193,10 @@ def main(input_video_path, output_video_path, start_frame=0, end_frame=None,
         motion_multiplier_y=motion_multiplier_y,
         motion_threshold_x=motion_threshold,
         motion_threshold_y=motion_threshold,
+        motion_trail_lenght=motion_trail_lenght,
         interpolation_method=interpolation_method,
-        border_mode=border_mode)
+        border_mode=border_mode
+    )
 
     # Writes frames to the output video file.
     print('Writing frames to %s...' % output_video_path)
@@ -248,16 +262,6 @@ if __name__ == '__main__':
         help='Effect end frame number. Default: last frame.')
 
     parser.add_argument(
-        '--frame_blend_weight',
-        metavar='<0.0-1.0>',
-        type=float,
-        default=0.0,
-        help=('Blend weight for the transformed frame in the final image. ' +
-              'Used to preserve detail from the frames throuhougt the video. ' +
-              'If > 0 the transformed frames will be blended with the result ' +
-              'images, otherwise only the first frame\'s pixels will be used.'))
-
-    parser.add_argument(
         '-m_threshold', '--motion_threshold',
         metavar='<pixel_threshold>',
         type=float,
@@ -291,6 +295,24 @@ if __name__ == '__main__':
         default=1.0,
         help='Multiplier to apply to the motion vectors.'
     )
+
+    parser.add_argument(
+        '-m_t_l', '--motion_trail_length',
+        metavar='<frames>',
+        type=int,
+        default=None,
+        help='The lenght in frame of the trail mosh effect. Default: All frames'
+    )
+
+    parser.add_argument(
+        '--frame_blend_weight',
+        metavar='<0.0-1.0>',
+        type=float,
+        default=0.0,
+        help=('Blend weight for the transformed frame in the final image. ' +
+              'Used to preserve detail from the frames throuhougt the video. ' +
+              'If > 0 the transformed frames will be blended with the result ' +
+              'images, otherwise only the first frame\'s pixels will be used.'))
 
     parser.add_argument(
         '--interpolation_method',
@@ -329,6 +351,7 @@ if __name__ == '__main__':
         motion_multiplier_x=args.motion_multiplier_x * args.motion_multiplier,
         motion_multiplier_y=args.motion_multiplier_y * args.motion_multiplier,
         motion_threshold=args.motion_threshold,
+        motion_trail_lenght=args.motion_trail_length,
         interpolation_method=args.interpolation_method,
         border_mode=args.border_mode,
         preview=bool(args.preview))
